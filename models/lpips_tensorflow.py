@@ -5,7 +5,9 @@ from tensorflow.keras.layers import Input, Lambda, Dropout, Conv2D, Permute
 import tensorflow.keras.backend as K
 from tensorflow.keras.applications.vgg16 import VGG16
 from keras_vggface.vggface import VGG16 as VGG16_VGGFace
+from keras_vggface.vggface import SENET50
 from keras_vggface.instance_normalization import InstanceNormalization
+
 
 def image_preprocess(image, image_size, weights):
     image = tf.image.resize(image, (image_size, image_size), method='bilinear')
@@ -17,7 +19,7 @@ def image_preprocess(image, image_size, weights):
         image = image / factor - center  # [0.0 ~ 255.0] -> [-1.0 ~ 1.0]
         image = (image - shift) / scale
     elif weights == 'vggface':
-
+        image = image[..., ::-1]    # RGB to BGR
         shift = tf.constant([91.4953, 103.8827, 131.0912])[None, None, None, :]
         image = (image - shift)
 
@@ -212,7 +214,8 @@ def perceptual_loss(image_size, weights=(0.01, 0.1, 0.3, 0.1)):
     input1 = Input(shape=(image_size, image_size, 3), dtype='float32', name='input1')
     input2 = Input(shape=(image_size, image_size, 3), dtype='float32', name='input2')
 
-    vggface_feats = build_pl_model(perceptual_model(image_size, weights='vggface'))
+    vggface_model = SENET50(include_top=False, weights='vggface', input_shape=(image_size, image_size, 3))
+    vggface_feats = build_pl_model(vggface_model, before_activ=False)
 
     # preprocess input images
     net_out1 = Lambda(lambda x: image_preprocess(x, image_size, weights))(input1)

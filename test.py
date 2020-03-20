@@ -29,13 +29,30 @@ pl = perceptual_loss(image_size)
 # official pytorch model value:
 # Distance: ex_ref.png <-> ex_p0.png = 0.569
 # Distance: ex_ref.png <-> ex_p1.png = 0.422
+
 image_fn1 = './imgs/bns/real/img1.png'
-image_fn2 = './imgs/bns/gen/img1.png'
-# image_fn2 = './imgs/ex_p1.png'
+image_fn2 = './imgs/bns/gen/img7.png'
 
 image1 = load_image(image_fn1)
 image2 = load_image(image_fn2)
-lpips01 = lpips([image1, image2])
-print('LPIPS: {:.3f}'.format(lpips01))
+# lpips01 = lpips([image1, image2])
+# print('LPIPS: {:.3f}'.format(lpips01))
 pl01 = pl([image1, image2])
 print('Perceptual loss: {:.3f}'.format(pl01))
+
+# image_path1 = './imgs/bns/real'
+# image_path2 = './imgs/bns/gen'
+# img_fn_list = [x for x in sorted(os.listdir(image_path1))]
+#
+# f = open('./imgs/bns/bns_pl.txt','w')
+# for image_fn in img_fn_list:
+#     image1 = load_image(os.path.join(image_path1, image_fn))
+#     image2 = load_image(os.path.join(image_path2, image_fn))
+#     # lpips01 = lpips([image1, image2])
+#     # print('LPIPS: {:.3f}'.format(lpips01))
+#     pl01 = pl([image1, image2])
+#     print('Perceptual loss: {:.3f}'.format(pl01))
+#
+#     f.writelines('%s: %.6f\n' % (image_fn, pl01))
+#
+# f.close()
