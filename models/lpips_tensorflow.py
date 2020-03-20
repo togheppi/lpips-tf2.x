@@ -2,10 +2,10 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Lambda, Dropout, Conv2D, Permute
+import tensorflow.keras.backend as K
 from tensorflow.keras.applications.vgg16 import VGG16
-from keras_vggface.vggface import SENET50
-from keras_vggface.utils import preprocess_input
-
+from keras_vggface.vggface import VGG16 as VGG16_VGGFace
+from keras_vggface.instance_normalization import InstanceNormalization
 
 def image_preprocess(image, image_size, weights):
     image = tf.image.resize(image, (image_size, image_size), method='bilinear')
@@ -17,6 +17,7 @@ def image_preprocess(image, image_size, weights):
         image = image / factor - center  # [0.0 ~ 255.0] -> [-1.0 ~ 1.0]
         image = (image - shift) / scale
     elif weights == 'vggface':
+
         shift = tf.constant([91.4953, 103.8827, 131.0912])[None, None, None, :]
         image = (image - shift)
 
@@ -25,7 +26,7 @@ def image_preprocess(image, image_size, weights):
 
 def learned_perceptual_metric_model(image_size, weights, vgg_model_ckpt_fn, lin_model_ckpt_fn):
     # initialize all models
-    net = perceptual_model(image_size)
+    net = perceptual_model(image_size, weights)
     lin = linear_model(image_size)
     net.load_weights(vgg_model_ckpt_fn)
     lin.load_weights(lin_model_ckpt_fn)
@@ -116,15 +117,18 @@ def learned_perceptual_metric_model(image_size, weights, vgg_model_ckpt_fn, lin_
 
 
 # tf.keras.applications
-def perceptual_model(image_size):
+def perceptual_model(image_size, weights='imagenet'):
     # (None, 64, 64, 64)
     # (None, 32, 32, 128)
     # (None, 16, 16, 256)
     # (None, 8, 8, 512)
     # (None, 4, 4, 512)
-    layers = ['block1_conv2', 'block2_conv2', 'block3_conv3', 'block4_conv3', 'block5_conv3']
-    vgg16 = VGG16(include_top=False, weights=None, input_shape=(image_size, image_size, 3))
-
+    if weights == 'imagenet':
+        layers = ['block1_conv2', 'block2_conv2', 'block3_conv3', 'block4_conv3', 'block5_conv3']
+        vgg16 = VGG16(include_top=False, weights=None, input_shape=(image_size, image_size, 3))
+    elif weights == 'vggface':
+        layers = ['conv1_2', 'conv2_2', 'conv3_3', 'conv4_3', 'conv5_3']
+        vgg16 = VGG16_VGGFace(include_top=False, weights=None, input_shape=(image_size, image_size, 3))
     vgg16_output_layers = [l.output for l in vgg16.layers if l.name in layers]
     model = Model(vgg16.input, vgg16_output_layers, name='perceptual_model')
     return model
@@ -184,3 +188,61 @@ def linear_model(input_image_size):
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name='linear_model')
     return model
+
+
+def build_pl_model(vggface_model, before_activ=False):
+    # Define Perceptual Loss Model
+    vggface_model.trainable = False
+    if before_activ == False:
+        out_size112 = vggface_model.layers[1].output
+        out_size55 = vggface_model.layers[36].output
+        out_size28 = vggface_model.layers[78].output
+        out_size7 = vggface_model.layers[-2].output
+    else:
+        out_size112 = vggface_model.layers[15].output  # misnamed: the output size is 55
+        out_size55 = vggface_model.layers[35].output
+        out_size28 = vggface_model.layers[77].output
+        out_size7 = vggface_model.layers[-3].output
+    vggface_feats = Model(vggface_model.input, [out_size112, out_size55, out_size28, out_size7])
+    vggface_feats.trainable = False
+    return vggface_feats
+
+
+def perceptual_loss(image_size, weights=(0.01, 0.1, 0.3, 0.1)):
+    input1 = Input(shape=(image_size, image_size, 3), dtype='float32', name='input1')
+    input2 = Input(shape=(image_size, image_size, 3), dtype='float32', name='input2')
+
+    vggface_feats = build_pl_model(perceptual_model(image_size, weights='vggface'))
+
+    # preprocess input images
+    net_out1 = Lambda(lambda x: image_preprocess(x, image_size, weights))(input1)
+    net_out2 = Lambda(lambda x: image_preprocess(x, image_size, weights))(input2)
+
+    # run vgg model first
+    real_feat112, real_feat55, real_feat28, real_feat7 = vggface_feats(net_out1)
+    fake_feat112, fake_feat55, fake_feat28, fake_feat7 = vggface_feats(net_out2)
+
+    # Apply instance norm on VGG(ResNet) features
+    # From MUNIT https://github.com/NVlabs/MUNIT
+    pl = 0
+
+    def instnorm(): return InstanceNormalization()
+
+    pl += weights[0] * calc_loss(instnorm()(fake_feat7), instnorm()(real_feat7), "l2")
+    pl += weights[1] * calc_loss(instnorm()(fake_feat28), instnorm()(real_feat28), "l2")
+    pl += weights[2] * calc_loss(instnorm()(fake_feat55), instnorm()(real_feat55), "l2")
+    pl += weights[3] * calc_loss(instnorm()(fake_feat112), instnorm()(real_feat112), "l2")
+
+    final_model = Model(inputs=[input1, input2], outputs=pl)
+    return final_model
+
+
+def calc_loss(pred, target, loss='l2'):
+    if loss.lower() == "l2":
+        return K.mean(K.square(pred - target))
+    elif loss.lower() == "l1":
+        return K.mean(K.abs(pred - target))
+    elif loss.lower() == "cross_entropy":
+        return -K.mean(K.log(pred + K.epsilon())*target + K.log(1 - pred + K.epsilon())*(1 - target))
+    else:
+        raise ValueError(f'Recieve an unknown loss type: {loss}.')
