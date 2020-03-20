@@ -3,20 +3,27 @@ import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Lambda, Dropout, Conv2D, Permute
 from tensorflow.keras.applications.vgg16 import VGG16
+from keras_vggface.vggface import SENET50
+from keras_vggface.utils import preprocess_input
 
 
-def image_preprocess(image):
-    factor = 255.0 / 2.0
-    center = 1.0
-    scale = tf.constant([0.458, 0.448, 0.450])[None, None, None, :]
-    shift = tf.constant([-0.030, -0.088, -0.188])[None, None, None, :]
+def image_preprocess(image, image_size, weights):
+    image = tf.image.resize(image, (image_size, image_size), method='bilinear')
+    if weights == 'imagenet':
+        factor = 255.0 / 2.0
+        center = 1.0
+        scale = tf.constant([0.458, 0.448, 0.450])[None, None, None, :]
+        shift = tf.constant([-0.030, -0.088, -0.188])[None, None, None, :]
+        image = image / factor - center  # [0.0 ~ 255.0] -> [-1.0 ~ 1.0]
+        image = (image - shift) / scale
+    elif weights == 'vggface':
+        shift = tf.constant([91.4953, 103.8827, 131.0912])[None, None, None, :]
+        image = (image - shift)
 
-    image = image / factor - center  # [0.0 ~ 255.0] -> [-1.0 ~ 1.0]
-    image = (image - shift) / scale
     return image
 
 
-def learned_perceptual_metric_model(image_size, vgg_model_ckpt_fn, lin_model_ckpt_fn):
+def learned_perceptual_metric_model(image_size, weights, vgg_model_ckpt_fn, lin_model_ckpt_fn):
     # initialize all models
     net = perceptual_model(image_size)
     lin = linear_model(image_size)
@@ -28,8 +35,8 @@ def learned_perceptual_metric_model(image_size, vgg_model_ckpt_fn, lin_model_ckp
     input2 = Input(shape=(image_size, image_size, 3), dtype='float32', name='input2')
 
     # preprocess input images
-    net_out1 = Lambda(lambda x: image_preprocess(x))(input1)
-    net_out2 = Lambda(lambda x: image_preprocess(x))(input2)
+    net_out1 = Lambda(lambda x: image_preprocess(x, image_size, weights))(input1)
+    net_out2 = Lambda(lambda x: image_preprocess(x, image_size, weights))(input2)
 
     # run vgg model first
     net_out1 = net(net_out1)
@@ -116,7 +123,7 @@ def perceptual_model(image_size):
     # (None, 8, 8, 512)
     # (None, 4, 4, 512)
     layers = ['block1_conv2', 'block2_conv2', 'block3_conv3', 'block4_conv3', 'block5_conv3']
-    vgg16 = VGG16(include_top=False, weights='imagenet', input_shape=(image_size, image_size, 3))
+    vgg16 = VGG16(include_top=False, weights=None, input_shape=(image_size, image_size, 3))
 
     vgg16_output_layers = [l.output for l in vgg16.layers if l.name in layers]
     model = Model(vgg16.input, vgg16_output_layers, name='perceptual_model')
